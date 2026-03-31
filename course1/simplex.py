@@ -1,231 +1,123 @@
+from ast import Not
+from operator import is_
+
 from scipy.optimize import linprog
 import numpy as np
 
 class Simplex:
-    def __init__(self, C, A, b, senses=None, is_max=True, M=1e6, tol=1e-9, max_iter=200):
+    def __init__(self, C, A, b,is_max = False):
         self.C = np.array(C, dtype=float)
         self.A = np.array(A, dtype=float)
         self.b = np.array(b, dtype=float)
         self.is_max = is_max
-        self.M = float(M)
-        self.tol = float(tol)
-        self.max_iter = int(max_iter)
+        self.B_vars = []  # 基变量索引
+        self.N_vars = []  # 非基变量索引
+        self.constraint_num = self.A.shape[0]  # 约束数量
+        self.variable_num = self.A.shape[1] + self.constraint_num  #总变量个数 原变量+人工变量总个数
+        self.Nvariable_num = self.A.shape[1] 
+        #约束个数 = 人工变量个数 = 基向量个数
+        #非基变量个数 = 原变量个数
 
-        m = self.A.shape[0]
-        if senses is None:
-            self.senses = ["<="] * m
-        elif isinstance(senses, str):
-            self.senses = [senses] * m
-        else:
-            self.senses = list(senses)
 
     def solve(self):
-        model = self.Mfunction()
-        A_ext = model["A_ext"]
-        b_vec = model["b"]
-        c_ext = model["c_ext"]
-        basis = model["basis"][:]
-        artificial_idx = model["artificial_idx"]
-        n_original = model["n_original"]
-
-        m, n = A_ext.shape
-
-        status = "unknown"
-        message = ""
-        iterations = 0
-
-        for iterations in range(1, self.max_iter + 1):
-            B = A_ext[:, basis]
-            try:
-                x_B = np.linalg.solve(B, b_vec)
-            except np.linalg.LinAlgError:
-                status = "error"
-                message = "当前基矩阵奇异，无法继续迭代。"
-                break
-
-            if np.any(x_B < -self.tol):
-                status = "error"
-                message = "出现负基变量，当前基不可行。"
-                break
-
-            # 解 B^T * pi = c_B，得到单纯形乘子 pi
-            c_B = c_ext[basis]
-            pi = np.linalg.solve(B.T, c_B)
-
-            # 约化成本：r_j = c_j - pi * A_j（最大化问题）
-            reduced = c_ext - pi @ A_ext
-            reduced[basis] = 0.0
-
-            entering = int(np.argmax(reduced))
-            if reduced[entering] <= self.tol:
-                status = "optimal"
-                message = "达到最优性条件。"
-                break
-
-            d = np.linalg.solve(B, A_ext[:, entering])
-            positive_mask = d > self.tol
-            if not np.any(positive_mask):
-                status = "unbounded"
-                message = "目标函数无界。"
-                break
-
-            ratios = np.full(m, np.inf)
-            ratios[positive_mask] = x_B[positive_mask] / d[positive_mask]
-            leaving_pos = int(np.argmin(ratios))
-            basis[leaving_pos] = entering
-        else:
-            status = "iteration_limit"
-            message = "达到最大迭代次数。"
-
-        result = {
-            "status": status,
-            "success": status == "optimal",
-            "message": message,
-            "iterations": iterations,
-        }
-
-        if status != "optimal":
-            return result
-
-        B = A_ext[:, basis]
-        x_B = np.linalg.solve(B, b_vec)
-        x = np.zeros(n)
-        x[basis] = x_B
-
-        # 人工变量仍为正，则原问题不可行。
-        if artificial_idx and np.any(x[artificial_idx] > self.tol):
-            result.update(
-                {
-                    "status": "infeasible",
-                    "success": False,
-                    "message": "最优时人工变量仍大于0，原问题不可行。",
-                }
-            )
-            return result
-
-        x_original = x[:n_original]
-        fun = float(np.dot(self.C, x_original))
-        if not self.is_max:
-            # 若是最小化问题，self.C 即原始最小化系数，直接输出最小值。
-            objective_value = fun
-        else:
-            objective_value = fun
-
-        result.update(
-            {
-                "x": x_original,
-                "fun": objective_value,
-                "basis": basis,
-                "A_ext": A_ext,
-                "b": b_vec,
-            }
-        )
-        return result
-    
-    def Mfunction(self):
-        if self.A.ndim != 2:
-            raise ValueError("A 必须是二维矩阵。")
-
-        m, n = self.A.shape
-        if self.C.shape[0] != n:
-            raise ValueError("C 的维度必须与 A 的列数一致。")
-        if self.b.shape[0] != m:
-            raise ValueError("b 的维度必须与 A 的行数一致。")
-        if len(self.senses) != m:
-            raise ValueError("senses 的长度必须与约束条数一致。")
-
-        A = self.A.copy()
-        b = self.b.copy()
-        senses = self.senses[:]
-
-        # 若 b_i < 0，则整行乘 -1，并翻转不等号方向。
-        for i in range(m):
-            if b[i] < 0:
-                A[i, :] *= -1
-                b[i] *= -1
-                if senses[i] == "<=":
-                    senses[i] = ">="
-                elif senses[i] == ">=":
-                    senses[i] = "<="
-
-        slack_count = sum(1 for s in senses if s == "<=")
-        surplus_count = sum(1 for s in senses if s == ">=")
-        artificial_count = sum(1 for s in senses if s in (">=", "="))
-
-        total_vars = n + slack_count + surplus_count + artificial_count
-        A_ext = np.zeros((m, total_vars), dtype=float)
-        A_ext[:, :n] = A
-
-        c_ext = np.zeros(total_vars, dtype=float)
         if self.is_max:
-            c_ext[:n] = self.C
-        else:
-            # 最小化转最大化：min c^T x 等价于 max (-c)^T x
-            c_ext[:n] = -self.C
+            self.C = -self.C  # 转化为最小化问题
+        #b和A的行数必须匹配
+        if self.A.shape[0] != self.b.shape[0]:
+            raise ValueError("A的行数必须与b的长度匹配")
+        #添加 约束项 个数的人工变量
+        m = self.A.shape[0]
+        self.A = np.hstack((self.A, np.eye(m)))  # 添加人工变量
+        self.C = np.hstack((self.C, np.zeros(m)))  
+        self.b = np.hstack((np.zeros(m), self.b))
 
-        basis = []
-        artificial_idx = []
+        #由大M法初始基矩阵为人工变量，其余为非基矩阵
+        self.B_vars = list(range(self.A.shape[1] - m, self.A.shape[1]))
+        self.N_vars = list(range(self.A.shape[1]- m))
 
-        slack_col = n
-        surplus_col = n + slack_count
-        artificial_col = n + slack_count + surplus_count
+        while not self.is_optimal():
+            if self.is_unbounded():
+                raise ValueError("问题无界")
+            #取出d中小于0的元素索引
+            t = np.where(self.d < 0)[0]
+            alpha_list = -self.b[t]/self.d[t]
+            min_index  = np.argmin(alpha_list)
+            alpha = alpha_list[min_index]
+            #最小值的索引作为出基变量索引
+            self.q = int(t[min_index])
+            #更新基变量和非基变量索引
+            self.B_vars.remove(self.q)
+            self.B_vars.append(self.p)
+            self.N_vars.remove(self.p)
+            self.N_vars.append(self.q)
+            
+            #更新b
+            self.b = self.b + alpha * self.d
+            
+        print("最优解为:", self.b[self.B_vars])
+        print("最优值为:", self.C[self.B_vars] @ self.b[self.B_vars])
 
-        for i, s in enumerate(senses):
-            if s == "<=":
-                A_ext[i, slack_col] = 1.0
-                basis.append(slack_col)
-                slack_col += 1
-            elif s == ">=":
-                A_ext[i, surplus_col] = -1.0
-                surplus_col += 1
+    def is_optimal(self):
+    
+        """
+        计算检验数，检测是否最优
+        output:
+        """
+        self.B_vars = sorted(self.B_vars)
+        self.N_vars = sorted(self.N_vars)
+        R = np.zeros(self.variable_num)
+        for index in self.N_vars:
+            # 计算检验数
+            B = self.A[:, self.B_vars]
+            r = self.C[index] - self.C[self.B_vars]@ np.linalg.inv(B) @ self.A[:, index]
+            R[index] = r
+        #如果所有检验数都大于等于0，则当前解为最优解
+        is_optimal = np.all(R[self.N_vars] >= 0)
+        #否则返回检验数最小的非基变量索引，作为入基向量
+        if not is_optimal:
+            self.p = int(np.where(R<0)[0][0])
+        
+        return is_optimal
+    def is_unbounded(self):
+        """
+        检测是否无界
+        """
+        B = self.A[:, self.B_vars]
+        #构建d
+        
+        d_1 = - np.linalg.inv(B) @ self.A[:, self.p]
+        d_2 = np.zeros(self.Nvariable_num)
+        d_2[self.p] = 1
+        #直接拼接 此时的索引顺序为[self.B_vars, self.N_vars]
+        d = np.hstack((d_1, d_2))
+        #调整d的顺序，使其与原变量索引一致
+        d = d[np.argsort(self.B_vars + self.N_vars)]
+        self.d = d
+        is_unbounded = np.all(d >= 0)
 
-                A_ext[i, artificial_col] = 1.0
-                c_ext[artificial_col] = -self.M
-                basis.append(artificial_col)
-                artificial_idx.append(artificial_col)
-                artificial_col += 1
-            elif s == "=":
-                A_ext[i, artificial_col] = 1.0
-                c_ext[artificial_col] = -self.M
-                basis.append(artificial_col)
-                artificial_idx.append(artificial_col)
-                artificial_col += 1
-            else:
-                raise ValueError("约束类型仅支持 '<=', '>=', '='。")
-
-        return {
-            "A_ext": A_ext,
-            "b": b,
-            "c_ext": c_ext,
-            "basis": basis,
-            "artificial_idx": artificial_idx,
-            "n_original": n,
-            "senses": senses,
-        }
+        
+        return is_unbounded
+        
 
 
 
 
 def Rundemo():
-    # max z = 3x1 + 2x2
-    C1 = [3, 2]
-    A1 = [[2, 1], [1, 3]]
-    b1 = [100, 200]
+    # max z = -2x1 + x2
+    C1 = [-2, 1]
+    A1 = [[-1, 1], [2, 1]]
+    b1 = [4, 6]
 
     # 使用大M法单纯形（本例都是 <=，无需人工变量，但流程兼容）。
-    solver = Simplex(C1, A1, b1, senses=["<=", "<="], is_max=True)
-    res_big_m = solver.solve()
-    if res_big_m["success"]:
-        print("[大M法] 最优解为:", res_big_m["x"])
-        print("[大M法] 最优值为:", res_big_m["fun"])
-    else:
-        print("[大M法] 求解失败:", res_big_m["message"])
+    solver = Simplex(C1, A1, b1,is_max=True)
+    res = solver.solve()
+
 
     # 使用 scipy 校验（linprog 默认最小化，因此目标取负）。
-    res1 = linprog([-v for v in C1], A_ub=A1, b_ub=b1)
+    res1 = linprog(c=[-2, 1], A_ub=[[-1, 1], [2, 1]], b_ub=[4, 6], method='highs')
     if res1.success:
         print("[linprog] 最优解为:", res1.x)
-        print("[linprog] 最优值为:", -res1.fun)
+        print("[linprog] 最优值为:", res1.fun)
     else:
         print("[linprog] 求解失败")
         
